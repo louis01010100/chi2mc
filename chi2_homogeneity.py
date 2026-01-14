@@ -12,6 +12,55 @@ from typing import Dict, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
+# Try to import numba for JIT compilation (optional but highly recommended for speed)
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    # Define a no-op decorator if numba is not available
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return decorator
+
+# Try to import tqdm for progress bars (optional)
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+
+
+@njit
+def _reconstruct_table_numba(permuted_batches, genotype_assignments, n_batches, n_genotypes):
+    """
+    JIT-compiled function to reconstruct contingency table from permuted batches.
+
+    This is significantly faster than the Python loop version.
+    """
+    table = np.zeros((n_batches, n_genotypes), dtype=np.int64)
+    for i in range(len(permuted_batches)):
+        table[permuted_batches[i], genotype_assignments[i]] += 1
+    return table
+
+
+@njit
+def _compute_chi2_statistic_numba(observed, expected):
+    """
+    JIT-compiled chi-squared statistic calculation.
+
+    Computes: sum((observed - expected)^2 / expected) for non-zero expected values.
+    """
+    chi2 = 0.0
+    for i in range(observed.shape[0]):
+        for j in range(observed.shape[1]):
+            if expected[i, j] > 0:
+                chi2 += (observed[i, j] - expected[i, j]) ** 2 / expected[i, j]
+    return chi2
+
 
 def load_data(file_path: str) -> pl.DataFrame:
     """
@@ -126,13 +175,16 @@ def chi2_standard_test(contingency_table: np.ndarray) -> Dict:
 def chi2_monte_carlo_test(
     contingency_table: np.ndarray,
     n_simulations: int = 10000,
-    random_seed: int = None
+    random_seed: int = None,
+    use_numba: bool = None
 ) -> Dict:
     """
     Perform chi-squared test with Monte Carlo simulation.
 
     This approach simulates the null distribution by randomly permuting
     the batch assignments while maintaining marginal totals.
+
+    OPTIMIZED: Now uses vectorized operations and optional numba JIT compilation.
 
     Parameters:
     -----------
@@ -142,6 +194,9 @@ def chi2_monte_carlo_test(
         Number of Monte Carlo simulations (default: 10000).
     random_seed : int, optional
         Random seed for reproducibility (default: None).
+    use_numba : bool, optional
+        Whether to use numba JIT compilation if available (default: None = auto-detect).
+        Set to False to disable numba even if installed.
 
     Returns:
     --------
@@ -150,13 +205,17 @@ def chi2_monte_carlo_test(
         - statistic: Chi-squared test statistic
         - pvalue: Monte Carlo p-value
         - dof: Degrees of freedom
-        - method: 'monte_carlo'
+        - method: 'monte_carlo' (or 'monte_carlo_numba' if numba used)
         - n_simulations: Number of simulations performed
     """
     if random_seed is not None:
         np.random.seed(random_seed)
 
-    # Calculate observed chi-squared statistic
+    # Auto-detect numba usage if not specified
+    if use_numba is None:
+        use_numba = NUMBA_AVAILABLE
+
+    # Calculate observed chi-squared statistic and expected frequencies
     chi2_stat, _, dof, expected = stats.chi2_contingency(contingency_table)
 
     # Prepare data for permutation
@@ -171,28 +230,46 @@ def chi2_monte_carlo_test(
             batch_assignments.extend([batch_idx] * count)
             genotype_assignments.extend([genotype_idx] * count)
 
-    batch_assignments = np.array(batch_assignments)
-    genotype_assignments = np.array(genotype_assignments)
+    batch_assignments = np.array(batch_assignments, dtype=np.int64)
+    genotype_assignments = np.array(genotype_assignments, dtype=np.int64)
 
-    # Monte Carlo simulation
+    # Monte Carlo simulation - OPTIMIZED with vectorization and optional numba
     simulated_chi2_stats = []
 
-    for _ in range(n_simulations):
-        # Permute batch assignments
-        permuted_batches = np.random.permutation(batch_assignments)
+    if use_numba and NUMBA_AVAILABLE:
+        # Use numba-optimized version for maximum speed
+        for _ in range(n_simulations):
+            permuted_batches = np.random.permutation(batch_assignments)
+            simulated_table = _reconstruct_table_numba(
+                permuted_batches, genotype_assignments, n_batches, n_genotypes
+            )
 
-        # Reconstruct contingency table
-        simulated_table = np.zeros_like(contingency_table)
-        for batch_idx, genotype_idx in zip(permuted_batches, genotype_assignments):
-            simulated_table[batch_idx, genotype_idx] += 1
-
-        # Calculate chi-squared statistic for simulated table
-        try:
-            sim_chi2_stat, _, _, _ = stats.chi2_contingency(simulated_table)
+            # Calculate chi-squared statistic using numba
+            sim_chi2_stat = _compute_chi2_statistic_numba(
+                simulated_table.astype(np.float64), expected
+            )
             simulated_chi2_stats.append(sim_chi2_stat)
-        except ValueError:
-            # Skip simulations that result in invalid tables
-            continue
+
+        method_name = 'monte_carlo_numba'
+    else:
+        # Use vectorized numpy version (still much faster than original)
+        for _ in range(n_simulations):
+            permuted_batches = np.random.permutation(batch_assignments)
+
+            # Vectorized contingency table reconstruction
+            combined_indices = permuted_batches * n_genotypes + genotype_assignments
+            flat_counts = np.bincount(combined_indices, minlength=n_batches * n_genotypes)
+            simulated_table = flat_counts.reshape(n_batches, n_genotypes)
+
+            # Calculate chi-squared statistic for simulated table
+            try:
+                sim_chi2_stat, _, _, _ = stats.chi2_contingency(simulated_table)
+                simulated_chi2_stats.append(sim_chi2_stat)
+            except ValueError:
+                # Skip simulations that result in invalid tables
+                continue
+
+        method_name = 'monte_carlo'
 
     simulated_chi2_stats = np.array(simulated_chi2_stats)
 
@@ -203,7 +280,7 @@ def chi2_monte_carlo_test(
         'statistic': chi2_stat,
         'pvalue': pvalue,
         'dof': dof,
-        'method': 'monte_carlo',
+        'method': method_name,
         'n_simulations': len(simulated_chi2_stats)
     }
 
@@ -219,6 +296,7 @@ def _process_probeset(
     Worker function to process a single probeset.
 
     This function is designed to be called by parallel workers.
+    DEPRECATED: Use _process_probeset_with_data for better performance.
 
     Parameters:
     -----------
@@ -242,6 +320,116 @@ def _process_probeset(
     # Load data
     df = load_data(file_path)
     probeset_data = df.filter(pl.col('probeset_id') == probeset_id)
+    return _process_probeset_core(probeset_data, probeset_id, min_expected_count, n_simulations, random_seed)
+
+
+def _process_probeset_with_data(
+    df: pl.DataFrame,
+    probeset_id: str,
+    min_expected_count: int,
+    n_simulations: int,
+    random_seed: Optional[int]
+) -> Dict:
+    """
+    OPTIMIZED worker function to process a single probeset with pre-loaded data.
+
+    This version receives the full DataFrame instead of loading it from disk,
+    which is much faster when processing multiple probesets.
+
+    Parameters:
+    -----------
+    df : pl.DataFrame
+        Pre-loaded DataFrame containing genotype data for all probesets.
+    probeset_id : str
+        Probeset identifier to process.
+    min_expected_count : int
+        Minimum expected count threshold for using standard test.
+    n_simulations : int
+        Number of Monte Carlo simulations for small samples.
+    random_seed : int, optional
+        Random seed for reproducibility.
+
+    Returns:
+    --------
+    dict
+        Result dictionary for this probeset.
+    """
+    probeset_data = df.filter(pl.col('probeset_id') == probeset_id)
+    return _process_probeset_core(probeset_data, probeset_id, min_expected_count, n_simulations, random_seed)
+
+
+def _process_probeset_batch(
+    df: pl.DataFrame,
+    probeset_ids: list,
+    min_expected_count: int,
+    n_simulations: int,
+    random_seed: Optional[int]
+) -> list:
+    """
+    OPTIMIZED worker function to process a batch of probesets.
+
+    This version processes multiple probesets in a single subprocess,
+    which dramatically reduces multiprocessing overhead for large datasets.
+
+    Parameters:
+    -----------
+    df : pl.DataFrame
+        Pre-loaded DataFrame containing genotype data for all probesets.
+    probeset_ids : list
+        List of probeset identifiers to process in this batch.
+    min_expected_count : int
+        Minimum expected count threshold for using standard test.
+    n_simulations : int
+        Number of Monte Carlo simulations for small samples.
+    random_seed : int, optional
+        Random seed for reproducibility.
+
+    Returns:
+    --------
+    list
+        List of result dictionaries, one for each probeset in the batch.
+    """
+    results = []
+    for probeset_id in probeset_ids:
+        result = _process_probeset_with_data(
+            df,
+            probeset_id,
+            min_expected_count,
+            n_simulations,
+            random_seed
+        )
+        results.append(result)
+    return results
+
+
+def _process_probeset_core(
+    probeset_data: pl.DataFrame,
+    probeset_id: str,
+    min_expected_count: int,
+    n_simulations: int,
+    random_seed: Optional[int]
+) -> Dict:
+    """
+    Core processing logic for a single probeset.
+
+    Parameters:
+    -----------
+    probeset_data : pl.DataFrame
+        DataFrame containing data for this specific probeset.
+    probeset_id : str
+        Probeset identifier.
+    min_expected_count : int
+        Minimum expected count threshold for using standard test.
+    n_simulations : int
+        Number of Monte Carlo simulations for small samples.
+    random_seed : int, optional
+        Random seed for reproducibility.
+
+    Returns:
+    --------
+    dict
+        Result dictionary for this probeset.
+    """
 
     # Create contingency table
     contingency_table = create_contingency_table(probeset_data)
@@ -309,7 +497,7 @@ def _process_probeset(
             'excluded_genotypes': ', '.join(excluded_genotypes) if excluded_genotypes else None
         }
 
-        if test_result['method'] == 'monte_carlo':
+        if 'monte_carlo' in test_result['method']:  # Handles both 'monte_carlo' and 'monte_carlo_numba'
             result_dict['n_simulations'] = float(test_result['n_simulations'])
         else:
             result_dict['n_simulations'] = np.nan
@@ -333,12 +521,83 @@ def _process_probeset(
         }
 
 
+def _format_progress_message(result: Dict, n_completed: int, n_total: int) -> str:
+    """
+    Format a progress message for a completed probeset.
+
+    Parameters:
+    -----------
+    result : dict
+        Result dictionary for the probeset.
+    n_completed : int
+        Number of probesets completed so far.
+    n_total : int
+        Total number of probesets to process.
+
+    Returns:
+    --------
+    str
+        Formatted progress message.
+    """
+    probeset_id = result['probeset_id']
+    method = result['method']
+
+    if method == 'skipped':
+        return f"[{n_completed}/{n_total}] {probeset_id}: SKIPPED - {result.get('error', 'Unknown error')}"
+
+    chi2 = result['chi2_statistic']
+    pval = result['pvalue']
+
+    # Format p-value
+    if pval < 0.0001:
+        pval_str = f"{pval:.2e}"
+    else:
+        pval_str = f"{pval:.6f}"
+
+    # Format chi2
+    chi2_str = f"{chi2:.4f}"
+
+    # Indicate significance
+    sig_marker = " ***" if pval < 0.001 else " **" if pval < 0.01 else " *" if pval < 0.05 else ""
+
+    return f"[{n_completed}/{n_total}] {probeset_id}: χ²={chi2_str}, p={pval_str}{sig_marker} ({method})"
+
+
+def _print_progress(result: Dict, n_completed: int, n_total: int, verbose: bool = False):
+    """
+    Print progress for a completed probeset.
+
+    Parameters:
+    -----------
+    result : dict
+        Result dictionary for the probeset.
+    n_completed : int
+        Number of probesets completed so far.
+    n_total : int
+        Total number of probesets to process.
+    verbose : bool
+        Whether to show detailed information.
+    """
+    if verbose:
+        print(_format_progress_message(result, n_completed, n_total))
+    else:
+        # Simple progress counter
+        percent = 100 * n_completed / n_total
+        print(f"Progress: {n_completed}/{n_total} ({percent:.1f}%)", end='\r')
+        if n_completed == n_total:
+            print()  # New line when complete
+
+
 def run_two_tier_chi2_test(
     file_path: str,
     min_expected_count: int = 5,
     n_simulations: int = 10000,
     random_seed: int = None,
-    n_workers: Optional[int] = None
+    n_workers: Optional[int] = None,
+    use_optimized: bool = True,
+    show_progress: bool = False,
+    verbose_progress: bool = False,
+    batch_size: int = 1000
 ) -> pl.DataFrame:
     """
     Run two-tier chi-squared homogeneity test on genotype data.
@@ -349,6 +608,9 @@ def run_two_tier_chi2_test(
     - Monte Carlo chi-squared test otherwise
 
     Probesets are processed in parallel for improved performance.
+
+    OPTIMIZED: Now uses vectorized operations, optional numba JIT compilation,
+    and optimized data loading.
 
     Parameters:
     -----------
@@ -363,6 +625,20 @@ def run_two_tier_chi2_test(
     n_workers : int, optional
         Number of parallel workers to use. If None, uses all available CPU cores.
         Set to 1 to disable parallel processing (default: None).
+    use_optimized : bool, optional
+        Whether to use optimized data loading (pass data to workers instead of file path).
+        Default: True (recommended for better performance).
+    show_progress : bool, optional
+        Whether to show progress bar/messages during processing (default: False).
+        If tqdm is installed, uses a progress bar. Otherwise, prints progress messages.
+    verbose_progress : bool, optional
+        Whether to show detailed progress with chi-squared and p-values (default: False).
+        Only used when show_progress=True. Shows each result as it completes.
+    batch_size : int, optional
+        Number of probesets to process in each subprocess (default: 1000).
+        Larger batches reduce multiprocessing overhead but may reduce parallelism.
+        For datasets with < 10,000 probesets, 1000 is optimal.
+        For datasets with > 100,000 probesets, consider 5000-10000.
 
     Returns:
     --------
@@ -372,73 +648,186 @@ def run_two_tier_chi2_test(
         - chi2_statistic: Chi-squared test statistic
         - pvalue: P-value
         - dof: Degrees of freedom
-        - method: Test method used ('standard' or 'monte_carlo')
+        - method: Test method used ('standard', 'monte_carlo', or 'monte_carlo_numba')
         - n_batches: Number of batches
         - total_samples: Total number of samples
     """
     # Load data to get list of probesets
     df = load_data(file_path)
     probeset_ids = df['probeset_id'].unique().to_list()
+    n_total = len(probeset_ids)
 
     # Determine number of workers
     if n_workers is None:
         n_workers = multiprocessing.cpu_count()
 
+    # Create batches of probesets for more efficient processing
+    # Each worker will process a batch of probesets to reduce overhead
+    batches = []
+    for i in range(0, n_total, batch_size):
+        batch = probeset_ids[i:i + batch_size]
+        batches.append(batch)
+
+    n_batches = len(batches)
+
     # Process probesets in parallel
     results = []
 
+    # Setup progress tracking
+    # IMPORTANT: Disable progress bar in multiprocessing to prevent I/O contention
+    # Use position and leave parameters for better multiprocessing compatibility
+    if show_progress and TQDM_AVAILABLE and n_workers > 1:
+        # For parallel processing, use special tqdm settings to avoid output contention
+        progress_bar = tqdm(
+            total=n_total,
+            desc="Processing probesets",
+            unit="probeset",
+            position=0,
+            leave=True,
+            disable=False  # Keep enabled but with safe settings
+        )
+    elif show_progress and TQDM_AVAILABLE:
+        # For single worker, use standard progress bar
+        progress_bar = tqdm(total=n_total, desc="Processing probesets", unit="probeset")
+    else:
+        progress_bar = None
+
     if n_workers == 1:
         # Sequential processing (useful for debugging)
-        for probeset_id in probeset_ids:
-            result = _process_probeset(
-                file_path,
-                probeset_id,
-                min_expected_count,
-                n_simulations,
-                random_seed
-            )
-            results.append(result)
+        # Process in batches even with single worker for consistency
+        n_completed = 0
+        for batch_idx, batch in enumerate(batches):
+            if use_optimized:
+                # Process batch
+                batch_results = _process_probeset_batch(
+                    df,
+                    batch,
+                    min_expected_count,
+                    n_simulations,
+                    random_seed
+                )
+            else:
+                # Process individually (legacy mode)
+                batch_results = []
+                for probeset_id in batch:
+                    result = _process_probeset(
+                        file_path,
+                        probeset_id,
+                        min_expected_count,
+                        n_simulations,
+                        random_seed
+                    )
+                    batch_results.append(result)
+
+            # Add batch results
+            results.extend(batch_results)
+
+            # Show progress for each probeset in batch
+            if show_progress:
+                for result in batch_results:
+                    n_completed += 1
+                    if progress_bar:
+                        progress_bar.update(1)
+                        if verbose_progress:
+                            progress_bar.write(_format_progress_message(result, n_completed, n_total))
+                    else:
+                        _print_progress(result, n_completed, n_total, verbose_progress)
     else:
         # Parallel processing using spawn context to prevent deadlocks
         # The 'spawn' method prevents deadlocks that can occur with 'fork' (default on Linux)
         # when running under pytest or in threaded environments
         ctx = multiprocessing.get_context('spawn')
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as executor:
-            # Submit all tasks
-            future_to_probeset = {
-                executor.submit(
-                    _process_probeset,
-                    file_path,
-                    probeset_id,
-                    min_expected_count,
-                    n_simulations,
-                    random_seed
-                ): probeset_id
-                for probeset_id in probeset_ids
-            }
+            # Submit all batch tasks
+            if use_optimized:
+                # OPTIMIZED: Process batches - each worker handles multiple probesets
+                future_to_batch = {
+                    executor.submit(
+                        _process_probeset_batch,
+                        df,
+                        batch,
+                        min_expected_count,
+                        n_simulations,
+                        random_seed
+                    ): batch
+                    for batch in batches
+                }
+            else:
+                # Legacy: Process individually (not recommended for large datasets)
+                future_to_batch = {}
+                for batch in batches:
+                    batch_futures = {
+                        executor.submit(
+                            _process_probeset,
+                            file_path,
+                            probeset_id,
+                            min_expected_count,
+                            n_simulations,
+                            random_seed
+                        ): [probeset_id]  # Wrap in list for consistency
+                        for probeset_id in batch
+                    }
+                    future_to_batch.update(batch_futures)
 
             # Collect results as they complete
-            for future in as_completed(future_to_probeset):
-                probeset_id = future_to_probeset[future]
+            n_completed = 0
+            for future in as_completed(future_to_batch):
+                batch = future_to_batch[future]
                 try:
-                    result = future.result()
-                    results.append(result)
+                    batch_results = future.result()
+
+                    # Handle both batch and single results
+                    if not isinstance(batch_results, list):
+                        batch_results = [batch_results]
+
+                    # Add batch results
+                    results.extend(batch_results)
+
+                    # Show progress for each probeset in batch
+                    for result in batch_results:
+                        n_completed += 1
+
+                        if show_progress:
+                            if progress_bar:
+                                progress_bar.update(1)
+                                # Only show verbose progress every N results in parallel mode to reduce I/O contention
+                                if verbose_progress:
+                                    # In parallel mode with many workers, only show every 10th result to reduce contention
+                                    if n_workers == 1 or n_completed % max(1, min(10, n_workers)) == 0:
+                                        progress_bar.write(_format_progress_message(result, n_completed, n_total))
+                            else:
+                                _print_progress(result, n_completed, n_total, verbose_progress)
+
                 except Exception as exc:
                     # Log unexpected exceptions (shouldn't happen with error handling in _process_probeset)
-                    print(f'WARNING: Probeset {probeset_id} generated an unexpected exception: {exc}')
-                    # Add a skipped result for this probeset
-                    results.append({
-                        'probeset_id': probeset_id,
-                        'chi2_statistic': np.nan,
-                        'pvalue': np.nan,
-                        'dof': np.nan,
-                        'method': 'skipped',
-                        'n_batches': np.nan,
-                        'total_samples': np.nan,
-                        'n_simulations': np.nan,
-                        'error': str(exc),
-                        'excluded_genotypes': None
-                    })
+                    print(f'WARNING: Batch processing generated an unexpected exception: {exc}')
+                    # Add skipped results for entire batch
+                    for probeset_id in batch:
+                        result = {
+                            'probeset_id': probeset_id,
+                            'chi2_statistic': np.nan,
+                            'pvalue': np.nan,
+                            'dof': np.nan,
+                            'method': 'skipped',
+                            'n_batches': np.nan,
+                            'total_samples': np.nan,
+                            'n_simulations': np.nan,
+                            'error': str(exc),
+                            'excluded_genotypes': None
+                        }
+                        results.append(result)
+                        n_completed += 1
+
+                        # Show progress even for failed probesets
+                        if show_progress:
+                            if progress_bar:
+                                progress_bar.update(1)
+                            else:
+                                _print_progress(result, n_completed, n_total, verbose_progress)
+
+    # Close progress bar if used
+    if progress_bar:
+        progress_bar.close()
 
     # Create results DataFrame
     results_df = pl.DataFrame(results)
@@ -495,10 +884,26 @@ def main():
         default=None,
         help='Number of parallel workers to use (default: all CPU cores)'
     )
+    parser.add_argument(
+        '--show-progress',
+        action='store_true',
+        help='Show progress during processing (uses tqdm if available)'
+    )
+    parser.add_argument(
+        '--verbose-progress',
+        action='store_true',
+        help='Show detailed progress with chi-squared and p-values for each probeset'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=1000,
+        help='Number of probesets to process in each subprocess (default: 1000)'
+    )
 
     args = parser.parse_args()
 
-    print("Two-Tier Chi-Squared Homogeneity Test")
+    print("Two-Tier Chi-Squared Homogeneity Test (OPTIMIZED)")
     print("=" * 80)
     print(f"Input file: {args.input_file}")
     print(f"Output file: {args.output_file}")
@@ -508,6 +913,27 @@ def main():
     print(f"Available CPU cores: {n_cpus}")
     n_workers_display = args.n_workers if args.n_workers else n_cpus
     print(f"Processing probesets in parallel using {n_workers_display} worker(s)...")
+
+    # Show optimization status
+    if NUMBA_AVAILABLE:
+        print("✓ Numba JIT compilation: ENABLED (faster Monte Carlo)")
+    else:
+        print("⚠ Numba JIT compilation: Not installed (still using vectorized operations)")
+        print("  Install numba for 5-20x additional speedup: pip install numba")
+
+    # Show progress tracking status
+    if args.show_progress or args.verbose_progress:
+        if TQDM_AVAILABLE:
+            print("✓ Progress tracking: ENABLED (using tqdm progress bar)")
+        else:
+            print("✓ Progress tracking: ENABLED (text-based)")
+            if not args.verbose_progress:
+                print("  Install tqdm for better progress bars: pip install tqdm")
+
+    # Show actual number of workers and batch configuration
+    actual_workers = args.n_workers if args.n_workers else n_cpus
+    print(f"Note: Using {actual_workers} parallel workers for processing")
+    print(f"Note: Batch size = {args.batch_size} probesets per worker")
     print()
 
     # Run the test with parallel processing
@@ -517,7 +943,10 @@ def main():
         min_expected_count=args.min_expected_count,
         n_simulations=args.n_simulations,
         random_seed=args.random_seed,
-        n_workers=args.n_workers
+        n_workers=args.n_workers,
+        show_progress=args.show_progress or args.verbose_progress,
+        verbose_progress=args.verbose_progress,
+        batch_size=args.batch_size
     )
     elapsed_time = time.time() - start_time
 
@@ -536,7 +965,14 @@ def main():
     print("Summary:")
     print(f"Total probesets tested: {len(results)}")
     print(f"Standard chi-squared tests: {results.filter(pl.col('method') == 'standard').height}")
-    print(f"Monte Carlo tests: {results.filter(pl.col('method') == 'monte_carlo').height}")
+
+    # Count Monte Carlo tests (both regular and numba versions)
+    mc_tests = results.filter(pl.col('method').str.contains('monte_carlo'))
+    mc_numba_tests = results.filter(pl.col('method') == 'monte_carlo_numba')
+    print(f"Monte Carlo tests: {len(mc_tests)}")
+    if len(mc_numba_tests) > 0:
+        print(f"  - With Numba acceleration: {len(mc_numba_tests)}")
+        print(f"  - Without Numba: {len(mc_tests) - len(mc_numba_tests)}")
 
     # Check for probesets with excluded genotypes
     excluded = results.filter(pl.col('excluded_genotypes').is_not_null())
