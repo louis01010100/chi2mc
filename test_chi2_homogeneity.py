@@ -187,7 +187,8 @@ class TestMonteCarloChi2:
         table = create_contingency_table(probeset_data)
 
         result = chi2_monte_carlo_test(table, n_simulations=1000)
-        assert result['method'] == 'monte_carlo'
+        # Method can be 'monte_carlo' or 'monte_carlo_numba' depending on numba availability
+        assert result['method'] in ['monte_carlo', 'monte_carlo_numba']
 
     def test_monte_carlo_pvalue_range(self, small_sample_data):
         """Test that p-value is between 0 and 1."""
@@ -284,7 +285,9 @@ class TestTwoTierChi2:
         # Clean up
         os.unlink(temp_file)
 
-        assert results.filter(pl.col('probeset_id') == 'PS003')['method'][0] == 'monte_carlo'
+        # Method can be 'monte_carlo' or 'monte_carlo_numba' depending on numba availability
+        method = results.filter(pl.col('probeset_id') == 'PS003')['method'][0]
+        assert method in ['monte_carlo', 'monte_carlo_numba']
 
     def test_two_tier_handles_multiple_probesets(self, tmp_path):
         """Test that two-tier test handles multiple probesets correctly."""
