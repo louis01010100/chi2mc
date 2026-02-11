@@ -13,6 +13,13 @@ import numpy as np
 import polars as pl
 from scipy import stats
 
+# Try to import Rust extension for maximum MC performance
+try:
+    import chi2mc_rust
+    RUST_AVAILABLE = True
+except ImportError:
+    RUST_AVAILABLE = False
+
 # Try to import numba for JIT compilation (optional but highly recommended for speed)
 try:
     from numba import njit
@@ -209,6 +216,13 @@ def chi2_monte_carlo_test(
         - method: 'monte_carlo' (or 'monte_carlo_numba' if numba used)
         - n_simulations: Number of simulations performed
     """
+    # Prefer Rust extension when available — entire MC loop runs in native code
+    if RUST_AVAILABLE:
+        seed_val = int(random_seed) if random_seed is not None else None
+        table_i64 = contingency_table.astype(np.int64, copy=False)
+        result = chi2mc_rust.monte_carlo_chi2(table_i64, n_simulations, seed=seed_val)
+        return dict(result)
+
     if random_seed is not None:
         np.random.seed(random_seed)
 

@@ -8,6 +8,7 @@ Two-tier approach:
 
 from chi2mc.chi2_homogeneity import (
     NUMBA_AVAILABLE,
+    RUST_AVAILABLE,
     TQDM_AVAILABLE,
     check_minimum_expected_frequency,
     chi2_monte_carlo_test,
@@ -25,5 +26,6 @@ __all__ = [
     "chi2_monte_carlo_test",
     "run_two_tier_chi2_test",
     "NUMBA_AVAILABLE",
+    "RUST_AVAILABLE",
     "TQDM_AVAILABLE",
 ]

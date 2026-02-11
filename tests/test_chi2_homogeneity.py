@@ -161,8 +161,8 @@ class TestMonteCarloChi2:
         table = create_contingency_table(probeset_data)
 
         result = chi2_monte_carlo_test(table, n_simulations=1000)
-        # Method can be 'monte_carlo' or 'monte_carlo_numba' depending on numba availability
-        assert result['method'] in ['monte_carlo', 'monte_carlo_numba']
+        # Method can be 'monte_carlo', 'monte_carlo_numba', or 'monte_carlo_rust'
+        assert result['method'] in ['monte_carlo', 'monte_carlo_numba', 'monte_carlo_rust']
 
     def test_monte_carlo_pvalue_range(self, small_sample_data):
         """Test that p-value is between 0 and 1."""
@@ -182,6 +182,69 @@ class TestMonteCarloChi2:
 
         assert result1['pvalue'] == result2['pvalue']
         assert result1['statistic'] == result2['statistic']
+
+
+class TestRustMonteCarlo:
+    """Test Rust-accelerated Monte Carlo chi-squared test."""
+
+    def test_rust_available(self):
+        """Test that Rust extension is importable."""
+        from chi2mc import RUST_AVAILABLE
+        assert RUST_AVAILABLE is True
+
+    def test_rust_mc_returns_dict(self, small_sample_data):
+        """Test that Rust MC returns a dict with required keys."""
+        import chi2mc_rust
+        probeset_data = small_sample_data.filter(pl.col('probeset_id') == 'PS003')
+        table = create_contingency_table(probeset_data).astype(np.int64)
+
+        result = chi2mc_rust.monte_carlo_chi2(table, 1000, seed=42)
+        assert 'statistic' in result
+        assert 'pvalue' in result
+        assert 'dof' in result
+        assert 'method' in result
+        assert 'n_simulations' in result
+
+    def test_rust_mc_method_label(self, small_sample_data):
+        """Test that Rust MC labels method correctly."""
+        import chi2mc_rust
+        probeset_data = small_sample_data.filter(pl.col('probeset_id') == 'PS003')
+        table = create_contingency_table(probeset_data).astype(np.int64)
+
+        result = chi2mc_rust.monte_carlo_chi2(table, 1000, seed=42)
+        assert result['method'] == 'monte_carlo_rust'
+
+    def test_rust_mc_pvalue_range(self, small_sample_data):
+        """Test that Rust MC p-value is between 0 and 1."""
+        import chi2mc_rust
+        probeset_data = small_sample_data.filter(pl.col('probeset_id') == 'PS003')
+        table = create_contingency_table(probeset_data).astype(np.int64)
+
+        result = chi2mc_rust.monte_carlo_chi2(table, 1000, seed=42)
+        assert 0 <= result['pvalue'] <= 1
+
+    def test_rust_mc_reproducibility(self, small_sample_data):
+        """Test that Rust MC results are reproducible with same seed."""
+        import chi2mc_rust
+        probeset_data = small_sample_data.filter(pl.col('probeset_id') == 'PS003')
+        table = create_contingency_table(probeset_data).astype(np.int64)
+
+        result1 = chi2mc_rust.monte_carlo_chi2(table, 1000, seed=42)
+        result2 = chi2mc_rust.monte_carlo_chi2(table, 1000, seed=42)
+        assert result1['pvalue'] == result2['pvalue']
+        assert result1['statistic'] == result2['statistic']
+
+    def test_rust_mc_statistic_matches_scipy(self, small_sample_data):
+        """Test that Rust chi2 statistic matches scipy."""
+        import chi2mc_rust
+        from scipy import stats
+        probeset_data = small_sample_data.filter(pl.col('probeset_id') == 'PS003')
+        table = create_contingency_table(probeset_data)
+        scipy_chi2, _, _, _ = stats.chi2_contingency(table)
+
+        table_i64 = table.astype(np.int64)
+        result = chi2mc_rust.monte_carlo_chi2(table_i64, 1000, seed=42)
+        assert abs(result['statistic'] - scipy_chi2) < 1e-10
 
 
 class TestTwoTierChi2:
@@ -259,9 +322,9 @@ class TestTwoTierChi2:
         # Clean up
         os.unlink(temp_file)
 
-        # Method can be 'monte_carlo' or 'monte_carlo_numba' depending on numba availability
+        # Method can be 'monte_carlo', 'monte_carlo_numba', or 'monte_carlo_rust'
         method = results.filter(pl.col('probeset_id') == 'PS003')['method'][0]
-        assert method in ['monte_carlo', 'monte_carlo_numba']
+        assert method in ['monte_carlo', 'monte_carlo_numba', 'monte_carlo_rust']
 
     def test_two_tier_handles_multiple_probesets(self, tmp_path):
         """Test that two-tier test handles multiple probesets correctly."""

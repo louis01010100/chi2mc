@@ -14,6 +14,7 @@ import polars as pl
 
 from chi2mc.chi2_homogeneity import (
     NUMBA_AVAILABLE,
+    RUST_AVAILABLE,
     TQDM_AVAILABLE,
     run_two_tier_chi2_test,
 )
@@ -92,7 +93,9 @@ def main():
     print(f"Processing probesets in parallel using {n_workers_display} worker(s)...")
 
     # Show optimization status
-    if NUMBA_AVAILABLE:
+    if RUST_AVAILABLE:
+        print("Rust Monte Carlo engine: ENABLED (fastest)")
+    elif NUMBA_AVAILABLE:
         print("Numba JIT compilation: ENABLED (faster Monte Carlo)")
     else:
         print("Numba JIT compilation: Not installed (still using vectorized operations)")
@@ -143,13 +146,18 @@ def main():
     print(f"Total probesets tested: {len(results)}")
     print(f"Standard chi-squared tests: {results.filter(pl.col('method') == 'standard').height}")
 
-    # Count Monte Carlo tests (both regular and numba versions)
+    # Count Monte Carlo tests (rust, numba, and plain versions)
     mc_tests = results.filter(pl.col('method').str.contains('monte_carlo'))
+    mc_rust_tests = results.filter(pl.col('method') == 'monte_carlo_rust')
     mc_numba_tests = results.filter(pl.col('method') == 'monte_carlo_numba')
     print(f"Monte Carlo tests: {len(mc_tests)}")
+    if len(mc_rust_tests) > 0:
+        print(f"  - With Rust acceleration: {len(mc_rust_tests)}")
     if len(mc_numba_tests) > 0:
         print(f"  - With Numba acceleration: {len(mc_numba_tests)}")
-        print(f"  - Without Numba: {len(mc_tests) - len(mc_numba_tests)}")
+    mc_plain = len(mc_tests) - len(mc_rust_tests) - len(mc_numba_tests)
+    if mc_plain > 0:
+        print(f"  - Without acceleration: {mc_plain}")
 
     # Check for probesets with excluded genotypes
     excluded = results.filter(pl.col('excluded_genotypes').is_not_null())
