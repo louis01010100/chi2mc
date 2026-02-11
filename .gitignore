@@ -11,6 +11,9 @@ build/
 # Testing
 .pytest_cache/
 
+# Rust
+rust/target/
+
 # IDE
 .idea/
 .vscode/
