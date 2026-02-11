@@ -1,32 +1,34 @@
 # Two-Tier Chi-Squared Homogeneity Test
 
-Test-driven implementation of a 2-tier chi-squared test for testing homogeneity of genotype frequencies across batches.
+A fast, native Rust implementation of a 2-tier chi-squared test for testing homogeneity of genotype frequencies across batches.
 
 ## Overview
 
 This tool tests whether genotype frequencies (AA, AB, BB, NC) are homogeneous across different batches for each probeset. It uses a two-tier approach:
 
-1. **Standard chi-squared test**: Used when all expected cell frequencies are ≥ 5
+1. **Standard chi-squared test**: Used when all expected cell frequencies are >= 5
 2. **Monte Carlo chi-squared test**: Used when any expected cell frequency is < 5
 
 ## Features
 
-- Test-driven development with comprehensive unit tests
+- Native Rust binary for maximum performance
 - Automatic selection between standard and Monte Carlo methods
-- **Optimized performance**: 5-50x faster with vectorization and optional numba JIT compilation
-- **Batch processing**: Process 1000 probesets per subprocess for optimal efficiency
-- **Progress tracking**: Monitor analysis with progress bars and real-time results
-- **Scalable**: Efficiently handles millions of probesets with all CPU cores
+- Parallel processing with [rayon](https://docs.rs/rayon) across all CPU cores
+- Progress tracking with [indicatif](https://docs.rs/indicatif) progress bars
 - Detailed results including test statistics, p-values, and degrees of freedom
 - Clear indication of which method was used for each probeset
-- Reproducible results with optional random seed
-- Parallel processing support for large datasets
+- Reproducible results with configurable random seed
+- Summary report generation
 
-## Requirements
+## Building
+
+Requires [Rust](https://www.rust-lang.org/tools/install) (edition 2021).
 
 ```bash
-pip install polars numpy scipy pytest
+cargo build --release
 ```
+
+The binary will be at `target/release/chi2mc`.
 
 ## Data Format
 
@@ -49,101 +51,51 @@ PS001	batch3	42	55	37	3
 
 ## Usage
 
-### Command Line
-
-```bash
-python chi2_homogeneity.py input_file.tsv output_file.tsv
-```
-
 Basic usage:
 ```bash
-python chi2_homogeneity.py workspace/eval/before.tsv results.tsv
+chi2mc input_file.tsv output_file.tsv
 ```
 
 With options:
 ```bash
-python chi2_homogeneity.py input.tsv output.tsv \
+chi2mc input.tsv output.tsv \
   --min-expected-count 5 \
   --n-simulations 10000 \
   --random-seed 42 \
   --n-workers 4
 ```
 
-**With progress tracking** (monitor long-running analyses):
+With progress tracking:
 ```bash
 # Simple progress bar
-python chi2_homogeneity.py input.tsv output.tsv --show-progress
+chi2mc input.tsv output.tsv --show-progress
 
 # Detailed progress with chi-squared and p-values
-python chi2_homogeneity.py input.tsv output.tsv --verbose-progress
+chi2mc input.tsv output.tsv --verbose-progress
 ```
 
 See all available options:
 ```bash
-python chi2_homogeneity.py --help
+chi2mc --help
 ```
 
-### Python API
+### CLI Options
 
-```python
-from chi2_homogeneity import run_two_tier_chi2_test
-
-# Run the test
-results = run_two_tier_chi2_test(
-    'path/to/your/data.tsv',
-    min_expected_count=5,      # Threshold for using standard vs Monte Carlo
-    n_simulations=10000,        # Number of Monte Carlo simulations
-    random_seed=42,             # For reproducibility (optional)
-    show_progress=True,         # Show progress bar (optional)
-    verbose_progress=False      # Show detailed results (optional)
-)
-
-# View results
-print(results)
-
-# Save results
-results.write_csv('results.tsv', separator='\t')
-```
-
-### Individual Functions
-
-```python
-from chi2_homogeneity import (
-    load_data,
-    create_contingency_table,
-    check_minimum_expected_frequency,
-    chi2_standard_test,
-    chi2_monte_carlo_test
-)
-
-# Load data
-df = load_data('data.tsv')
-
-# Get data for a specific probeset
-probeset_data = df[df['probeset_id'] == 'PS001']
-
-# Create contingency table
-table = create_contingency_table(probeset_data)
-
-# Check if standard test is appropriate
-use_standard = check_minimum_expected_frequency(table, min_count=5)
-
-# Perform appropriate test
-if use_standard:
-    result = chi2_standard_test(table)
-else:
-    result = chi2_monte_carlo_test(table, n_simulations=10000)
-
-print(f"Chi-squared statistic: {result['statistic']:.2f}")
-print(f"P-value: {result['pvalue']:.4f}")
-print(f"Method: {result['method']}")
-```
+| Option | Default | Description |
+|---|---|---|
+| `--min-expected-count` | 5 | Threshold for standard vs Monte Carlo |
+| `--n-simulations` | 10000 | Number of Monte Carlo simulations |
+| `--random-seed` | 42 | Random seed for reproducibility |
+| `--n-workers` | all cores | Number of parallel workers |
+| `--show-progress` | off | Show progress bar |
+| `--verbose-progress` | off | Show per-probeset results during processing |
+| `--batch-size` | 1000 | Number of probesets per worker batch |
 
 ## Output Format
 
 ### Main Results File (TSV)
 
-The results DataFrame contains:
+The results file contains:
 
 - `probeset_id`: Probeset identifier
 - `chi2_statistic`: Chi-squared test statistic (NaN for skipped probesets)
@@ -168,8 +120,8 @@ A detailed summary report is automatically generated alongside the main results 
 
 ## Interpretation
 
-- **Null hypothesis (H₀)**: Genotype frequencies are homogeneous across batches
-- **Alternative hypothesis (H₁)**: Genotype frequencies differ across batches
+- **Null hypothesis (H0)**: Genotype frequencies are homogeneous across batches
+- **Alternative hypothesis (H1)**: Genotype frequencies differ across batches
 
 A small p-value (typically < 0.05) suggests rejecting the null hypothesis, indicating that genotype frequencies are not homogeneous across batches.
 
@@ -193,37 +145,41 @@ The summary reports both excluded genotypes and skipped probesets separately.
 
 ```bash
 # Run all tests
-pytest test_chi2_homogeneity.py -v
+cargo test
 
-# Run specific test class
-pytest test_chi2_homogeneity.py::TestStandardChi2 -v
+# Run with output
+cargo test -- --nocapture
 
-# Run with coverage
-pytest test_chi2_homogeneity.py --cov=chi2_homogeneity --cov-report=html
+# Run integration tests only
+cargo test --test integration
 ```
 
-## Test Coverage
+## Project Structure
 
-The test suite includes:
-
-- **Data Loading Tests**: Verify correct file loading and column validation
-- **Contingency Table Tests**: Check table creation and data integrity
-- **Minimum Frequency Tests**: Verify correct detection of small expected frequencies
-- **Standard Chi-Squared Tests**: Test standard method correctness
-- **Monte Carlo Tests**: Test Monte Carlo simulation and reproducibility
-- **Integration Tests**: Verify end-to-end workflow and method selection
+```
+src/
+  main.rs          # Entry point, CLI orchestration, parallel processing
+  cli.rs           # Command-line argument parsing (clap)
+  io.rs            # TSV input/output
+  stats.rs         # Chi-squared statistic computation
+  monte_carlo.rs   # Monte Carlo simulation engine
+  probeset.rs      # Per-probeset processing logic
+  report.rs        # Summary report generation
+tests/
+  integration.rs   # End-to-end integration tests
+```
 
 ## Algorithm Details
 
 ### Standard Chi-Squared Test
 
-Uses scipy's `chi2_contingency` function which computes:
+Computes the Pearson chi-squared statistic:
 
 ```
-χ² = Σ [(O - E)² / E]
+chi2 = sum[(O - E)^2 / E]
 ```
 
-where O is observed frequency and E is expected frequency under independence.
+where O is observed frequency and E is expected frequency under independence. The p-value is computed from the chi-squared CDF using the [statrs](https://docs.rs/statrs) crate.
 
 ### Monte Carlo Chi-Squared Test
 
@@ -232,9 +188,9 @@ For cases with small expected frequencies:
 1. Compute observed chi-squared statistic
 2. Permute batch assignments randomly while maintaining marginal totals
 3. Recompute chi-squared statistic for each permutation
-4. Calculate p-value as proportion of permuted statistics ≥ observed statistic
+4. Calculate p-value as proportion of permuted statistics >= observed statistic
 
-This provides an exact test that doesn't rely on asymptotic chi-squared distribution.
+This provides an exact test that doesn't rely on the asymptotic chi-squared distribution. Random number generation uses [rand](https://docs.rs/rand) with the ChaCha8 PRNG for reproducibility.
 
 ## Example Results
 
@@ -258,54 +214,6 @@ In this example:
 - PS004 shows significant heterogeneity (p < 0.001) using standard test
 - Other probesets show no significant difference across batches
 - Monte Carlo was automatically used for PS001-PS003 due to small expected frequencies
-
-## Customization
-
-### Adjusting Minimum Expected Count Threshold
-
-```python
-# Use threshold of 3 instead of 5
-results = run_two_tier_chi2_test(
-    'data.tsv',
-    min_expected_count=3
-)
-```
-
-### Increasing Monte Carlo Simulations
-
-Command line:
-```bash
-python chi2_homogeneity.py data.tsv results.tsv --n-simulations 100000
-```
-
-Python API:
-```python
-# Use more simulations for higher precision
-results = run_two_tier_chi2_test(
-    'data.tsv',
-    n_simulations=100000
-)
-```
-
-### Controlling Parallel Processing
-
-Command line:
-```bash
-# Use 4 workers
-python chi2_homogeneity.py data.tsv results.tsv --n-workers 4
-
-# Sequential processing (no parallelism)
-python chi2_homogeneity.py data.tsv results.tsv --n-workers 1
-```
-
-Python API:
-```python
-# Use 4 workers
-results = run_two_tier_chi2_test('data.tsv', n_workers=4)
-
-# Sequential processing
-results = run_two_tier_chi2_test('data.tsv', n_workers=1)
-```
 
 ## License
 
