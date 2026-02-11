@@ -1,6 +1,10 @@
 # Rust
 /target/
 
+# E2E generated output
+e2e/output.tsv
+e2e/output_summary.txt
+
 # IDE
 .idea/
 .vscode/
