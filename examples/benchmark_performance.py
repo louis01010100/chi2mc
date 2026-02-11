@@ -1,5 +1,5 @@
 """
-Performance benchmarking script for chi2_homogeneity optimizations.
+Performance benchmarking script for chi2mc optimizations.
 
 This script measures the performance improvements from:
 1. Vectorized contingency table reconstruction
@@ -7,19 +7,19 @@ This script measures the performance improvements from:
 3. Optimized data loading
 
 Usage:
-    python benchmark_performance.py <input_file.tsv>
+    python -m examples.benchmark_performance <input_file.tsv>
 
 Example:
-    python benchmark_performance.py workspace/eval/before.tsv
+    python -m examples.benchmark_performance workspace/eval/before.tsv
 """
 
 import time
 import sys
 import numpy as np
-from chi2_homogeneity import (
+from chi2mc import (
     run_two_tier_chi2_test,
     load_data,
-    NUMBA_AVAILABLE
+    NUMBA_AVAILABLE,
 )
 
 
@@ -116,9 +116,9 @@ def benchmark_full_pipeline(file_path, n_simulations=10000):
         ))
         print(f"Standard tests: Max p-value difference = {max_pvalue_diff:.10f}")
         if max_pvalue_diff < 1e-10:
-            print("✓ Standard tests produce identical results")
+            print("Standard tests produce identical results")
         else:
-            print("✗ WARNING: Standard tests show differences!")
+            print("WARNING: Standard tests show differences!")
 
     # For Monte Carlo tests, results should be similar but may vary
     mc_tests = merged.filter(
@@ -135,9 +135,9 @@ def benchmark_full_pipeline(file_path, n_simulations=10000):
         print(f"Monte Carlo tests: Mean p-value difference = {mean_pvalue_diff:.6f}")
         print(f"Monte Carlo tests: Max p-value difference = {max_pvalue_diff:.6f}")
         if max_pvalue_diff < 0.05:
-            print("✓ Monte Carlo tests produce consistent results (differences < 0.05)")
+            print("Monte Carlo tests produce consistent results (differences < 0.05)")
         else:
-            print("⚠ Monte Carlo tests show larger differences (expected due to randomness)")
+            print("Monte Carlo tests show larger differences (expected due to randomness)")
 
     print()
 
@@ -158,7 +158,7 @@ def benchmark_full_pipeline(file_path, n_simulations=10000):
         print(f"\nMonte Carlo tests: {n_mc_tests}/{n_probesets}")
         print(f"Numba acceleration: {'ENABLED' if 'numba' in results_opt['method'][0] else 'Available but check method column'}")
     else:
-        print("\n⚠ Install numba for additional 5-20x speedup:")
+        print("\nInstall numba for additional 5-20x speedup:")
         print("  pip install numba")
 
     print("=" * 80)
@@ -173,7 +173,7 @@ def benchmark_monte_carlo_only(file_path, n_simulations=10000):
     Tests a single probeset that requires Monte Carlo to isolate
     the performance of the simulation itself.
     """
-    from chi2_homogeneity import (
+    from chi2mc import (
         create_contingency_table,
         chi2_monte_carlo_test
     )
@@ -287,7 +287,7 @@ def benchmark_monte_carlo_only(file_path, n_simulations=10000):
     else:
         print(f"Vectorized time:  {format_time(time_vec)}")
         if not NUMBA_AVAILABLE:
-            print("\n⚠ Install numba for additional speedup:")
+            print("\nInstall numba for additional speedup:")
             print("  pip install numba")
 
     print("=" * 80)
@@ -295,9 +295,9 @@ def benchmark_monte_carlo_only(file_path, n_simulations=10000):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python benchmark_performance.py <input_file.tsv>")
+        print("Usage: python -m examples.benchmark_performance <input_file.tsv>")
         print("\nExample:")
-        print("  python benchmark_performance.py workspace/eval/before.tsv")
+        print("  python -m examples.benchmark_performance workspace/eval/before.tsv")
         sys.exit(1)
 
     file_path = sys.argv[1]
@@ -311,7 +311,7 @@ def main():
     # Detailed Monte Carlo benchmark
     benchmark_monte_carlo_only(file_path, n_simulations=n_simulations)
 
-    print("\n✓ Benchmark complete!")
+    print("\nBenchmark complete!")
 
 
 if __name__ == '__main__':

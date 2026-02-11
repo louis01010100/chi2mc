@@ -110,7 +110,7 @@ def test_parallelism(n_tasks=100, n_workers=None):
 
     if len(unique_pids) < n_workers:
         print()
-        print("⚠️  WARNING: Fewer workers used than expected!")
+        print("WARNING: Fewer workers used than expected!")
         print(f"   Expected: {n_workers} workers")
         print(f"   Actual:   {len(unique_pids)} workers")
         print()
@@ -125,7 +125,7 @@ def test_parallelism(n_tasks=100, n_workers=None):
         print("- Try: export MKL_NUM_THREADS=1")
     else:
         print()
-        print("✓ All expected workers were used!")
+        print("All expected workers were used!")
 
     print("=" * 80)
 
@@ -146,10 +146,10 @@ def main():
     success = test_parallelism(n_tasks=n_tasks, n_workers=n_workers)
 
     if not success:
-        print("\n⚠️  Parallelism test FAILED - not all workers were used")
+        print("\nParallelism test FAILED - not all workers were used")
         sys.exit(1)
     else:
-        print("\n✓ Parallelism test PASSED")
+        print("\nParallelism test PASSED")
         sys.exit(0)
 
 

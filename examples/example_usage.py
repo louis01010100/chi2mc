@@ -1,11 +1,11 @@
 """
 Example usage of the two-tier chi-squared homogeneity test.
 
-This script demonstrates how to use the chi2_homogeneity module
+This script demonstrates how to use the chi2mc package
 with your own data.
 """
 
-from chi2_homogeneity import (
+from chi2mc import (
     run_two_tier_chi2_test,
     load_data,
     create_contingency_table,
@@ -61,7 +61,7 @@ def example_2_manual_analysis():
 
     # Create contingency table
     table = create_contingency_table(probeset_data)
-    print("\nContingency table (batches × genotypes):")
+    print("\nContingency table (batches x genotypes):")
     print(f"{'Batch':<10} {'AA':>8} {'AB':>8} {'BB':>8} {'NC':>8} {'Total':>10}")
     print("-" * 55)
     for i, batch in enumerate(probeset_data['batch_name'].unique().sort()):
@@ -72,7 +72,7 @@ def example_2_manual_analysis():
 
     # Check minimum expected frequency
     use_standard = check_minimum_expected_frequency(table, min_count=5)
-    print(f"\nAll expected frequencies ≥ 5: {use_standard}")
+    print(f"\nAll expected frequencies >= 5: {use_standard}")
     print(f"Recommended method: {'Standard Chi-squared' if use_standard else 'Monte Carlo'}")
 
     # Perform the test
@@ -91,13 +91,13 @@ def example_2_manual_analysis():
 
     # Interpretation
     alpha = 0.05
-    print(f"\nInterpretation (α = {alpha}):")
+    print(f"\nInterpretation (alpha = {alpha}):")
     if result['pvalue'] < alpha:
-        print(f"  ✗ Reject null hypothesis (p = {result['pvalue']:.6f} < {alpha})")
-        print(f"  → Genotype frequencies differ significantly across batches")
+        print(f"  Reject null hypothesis (p = {result['pvalue']:.6f} < {alpha})")
+        print(f"  -> Genotype frequencies differ significantly across batches")
     else:
-        print(f"  ✓ Fail to reject null hypothesis (p = {result['pvalue']:.6f} ≥ {alpha})")
-        print(f"  → No significant difference in genotype frequencies across batches")
+        print(f"  Fail to reject null hypothesis (p = {result['pvalue']:.6f} >= {alpha})")
+        print(f"  -> No significant difference in genotype frequencies across batches")
 
 
 def example_3_compare_methods():
@@ -162,8 +162,8 @@ def example_4_batch_processing():
     bonferroni_threshold = alpha / n_tests
     print(f"\n\nBonferroni correction for multiple testing:")
     print(f"  Number of tests: {n_tests}")
-    print(f"  Original α: {alpha}")
-    print(f"  Bonferroni-corrected α: {bonferroni_threshold:.6f}")
+    print(f"  Original alpha: {alpha}")
+    print(f"  Bonferroni-corrected alpha: {bonferroni_threshold:.6f}")
     significant_bonferroni = results.filter(pl.col('pvalue') < bonferroni_threshold)
     print(f"  Significant after correction: {len(significant_bonferroni)}")
 
@@ -230,9 +230,9 @@ if __name__ == '__main__':
     """Run all examples."""
 
     print("\n")
-    print("╔" + "=" * 78 + "╗")
-    print("║" + " " * 15 + "Two-Tier Chi-Squared Homogeneity Test Examples" + " " * 16 + "║")
-    print("╚" + "=" * 78 + "╝")
+    print("=" * 80)
+    print(" " * 15 + "Two-Tier Chi-Squared Homogeneity Test Examples")
+    print("=" * 80)
 
     # Run all examples
     example_1_basic_usage()
