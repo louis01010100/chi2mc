@@ -26,10 +26,6 @@ pub struct Args {
     #[arg(long)]
     pub n_workers: Option<usize>,
 
-    /// Show progress during processing
-    #[arg(long)]
-    pub show_progress: bool,
-
     /// Show detailed progress with chi-squared and p-values for each probeset
     #[arg(long)]
     pub verbose_progress: bool,

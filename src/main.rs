@@ -29,10 +29,6 @@ fn main() {
     println!("Processing probesets in parallel using {n_workers} worker(s)...");
     println!("Rust Monte Carlo engine: ENABLED (native binary)");
 
-    if args.show_progress || args.verbose_progress {
-        println!("Progress tracking: ENABLED (using indicatif progress bar)");
-    }
-
     println!("Note: Using {n_workers} parallel workers for processing");
     println!("Note: Batch size = {} probesets per worker", args.batch_size);
     println!();
@@ -61,20 +57,15 @@ fn main() {
 
     let start = Instant::now();
 
-    // Optional progress bar
-    let pb = if args.show_progress || args.verbose_progress {
-        let bar = ProgressBar::new(n_total as u64);
-        bar.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-        Some(bar)
-    } else {
-        None
-    };
+    // Progress bar (always shown)
+    let pb = ProgressBar::new(n_total as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+        )
+        .unwrap()
+        .progress_chars("#>-"),
+    );
 
     // Process probesets in parallel with rayon
     let results: Vec<ProbesetResult> = probeset_entries
@@ -87,20 +78,16 @@ fn main() {
                 args.n_simulations,
                 args.random_seed,
             );
-            if let Some(ref bar) = pb {
-                bar.inc(1);
-                if args.verbose_progress {
-                    let msg = format_progress_message(&result);
-                    bar.println(msg);
-                }
+            pb.inc(1);
+            if args.verbose_progress {
+                let msg = format_progress_message(&result);
+                pb.println(msg);
             }
             result
         })
         .collect();
 
-    if let Some(ref bar) = pb {
-        bar.finish_with_message("done");
-    }
+    pb.finish_with_message("done");
 
     let elapsed = start.elapsed().as_secs_f64();
 
